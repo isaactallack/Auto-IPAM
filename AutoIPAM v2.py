@@ -3,6 +3,7 @@ import ipaddress
 import csv
 import os
 import json
+import time
 
 with open("config.json", "r") as config_file:
     config = json.load(config_file)
@@ -16,7 +17,7 @@ class Block:
         chain = self.bluecat_manager.utils.dig(bluecat_manager.client, network.network_address, "IP4Block")
 
         if self.bluecat_manager.utils.checkIfExists(entry[2], chain):
-            print("Block already exists.")
+            print(f"Block {entry[2]} already exists.")
         else:
             print(f"Added {entry[1]} block to {entry[2]}.")
             self.bluecat_manager.client.service.addIP4BlockByCIDR(chain[-1]['id'], entry[2], f"name={entry[1]}|" + self.bluecat_manager.block_properties)
@@ -36,7 +37,7 @@ class Network:
             gateway = f'gateway={entry[3]}|'
 
         if self.bluecat_manager.utils.checkIfExists(entry[2], network_chain):
-            print("Network already exists.")
+            print(f"Network {entry[2]} already exists.")
         else:
             network_id = self.bluecat_manager.client.service.addIP4Network(block_chain[-1]['id'], entry[2], f'name={entry[1]}|{gateway}' + self.bluecat_manager.block_properties)
             print(f"Added {entry[1]} network to {entry[2]}.")
@@ -87,7 +88,22 @@ class Host:
         if subzone == 0:
             return False
 
-        self.bluecat_manager.dns_dict[host_area] = self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, subzone, "HostRecord", end=9999)
+        if host_area in self.bluecat_manager.dns_dict:
+            self.bluecat_manager.dns_dict[host_area].extend(self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, subzone, "HostRecord", end=9999))
+        else:
+            self.bluecat_manager.dns_dict[host_area] = self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, subzone, "HostRecord", end=9999)
+
+        self.bluecat_manager.full_updates += [host_area] # Add this domain to the list that have had full dictionaries built
+
+    def addToDict(self, hostname, _id):
+        data = self.bluecat_manager.client.service.getEntityById(_id)
+        elements = hostname.split('.')
+        host_area = elements[-2].upper()
+        
+        if host_area in self.bluecat_manager.dns_dict:
+            self.bluecat_manager.dns_dict[host_area].append(data)
+        else:
+            self.bluecat_manager.dns_dict[host_area] = [data]
 
     def findExistingHostID(self, hostname):
         """Find the object ID of an existing host."""
@@ -97,7 +113,7 @@ class Host:
         host_without_zone = '.'.join(modified_elements)
         subzone = 0
 
-        if host_area.upper() not in self.bluecat_manager.dns_dict:
+        if host_area.upper() not in self.bluecat_manager.full_updates:
             print(f"Building dictionary for '{host_area}.ntlb'")
             self.buildDnsDict(host_area.upper())
 
@@ -117,7 +133,9 @@ class Host:
     
     def addNewHostRecord(self, view_id, _name, ip):
         """ Add a host record given the host doesn't already exist and the IP isn't already assigned """
-        self.bluecat_manager.client.service.addHostRecord(view_id, _name, ip, "0", "reverseRecord=true")
+        add_id = self.bluecat_manager.client.service.addHostRecord(view_id, _name, ip, "0", "reverseRecord=true")
+        # Add the new host record into the dictionary
+        self.addToDict(_name, add_id)
         print(f"Assigned {_name} to {ip}.")
 
     def updateHostRecord(self, _name, ip):
@@ -144,10 +162,10 @@ class Host:
             return False
         return True
 
-    def checkIfHostnameIsInDomain(self, hostname):
+    def checkIfHostnameIsInNTLB(self, hostname):
         elements = hostname.split('.')
         domain = elements[-1]
-        if domain.upper() != "XXX":
+        if domain.upper() != "NTLB":
             return False
         return True
 
@@ -169,7 +187,7 @@ class Host:
             if not self.checkIfHostnameHasTwoDomains(hostname)
             else (
                 (False, f"This hostname ({hostname}) is not part of the 'ntlb' domain.")
-                if not self.checkIfHostnameIsInDomain(hostname)
+                if not self.checkIfHostnameIsInNTLB(hostname)
                 else (
                     (False, f"This subdomain doesn't exist. Please check the hostname ({hostname}).")
                     if not self.checkIfHostnameHasValidSubdomain(hostname)
@@ -302,6 +320,7 @@ class BluecatManager:
         self.client = Client(f"http://{bam_hostname}/Services/API?wsdl")
         self.session_id = self.client.service.login(username, password)
         self.dns_dict = {}
+        self.full_updates = [] # Which domains have had a full dictionary built
         self.top_level_view_id = config["top_level_view_id"]
         self.ntlb_view_id = config["ntlb_view_id"]
         self.block_properties = f"allowDuplicateHost=disable|inheritAllowDuplicateHost=true|pingBeforeAssign=disable|inheritPingBeforeAssign=true|inheritDefaultDomains=true|defaultView={self.top_level_view_id}|inheritDefaultView=true|inheritDNSRestrictions=true|"
@@ -315,10 +334,10 @@ class BluecatManager:
         self.client.service.logout()
 
 
-file_path = 'test.csv'
-username = '' # Add username here
+file_path = ''
+username = ''
 password = os.environ.get("BLUECAT_API_PASSWORD")
-server_ip = '' # Add host IP here
+server_ip = ''
 bluecat_manager = BluecatManager(username, password, server_ip)
 
 with open(file_path, mode='r', newline='') as csvfile:
@@ -337,5 +356,6 @@ for entry in data:
         process_entry_func(entry)
     else:
         print(f"Unknown entry type: {entry[0]}")
+    time.sleep(1) # Adding just in case of rate limiting
 
 bluecat_manager.logout()
