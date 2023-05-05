@@ -4,4 +4,5 @@ Network,Test Network 2,10.10.10.16/28,10.10.10.30
 Host,test-host.test.xxx,10.10.10.1,This is a comment,add
 Host,test-host2.fake.xxx,10.10.10.2,This is another comment,replace
 Host,test-host.test.xxx,10.10.10.17,Final comment,append
-Host,test-host.test.xxx,10.10.10.17,,
+Host,test-host.test.xxx,10.10.10.18,,
+Host,test-host.test.xxx,10.10.10.19,,
