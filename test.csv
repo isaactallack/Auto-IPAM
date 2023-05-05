@@ -1,6 +1,6 @@
-Block,Test Block 2,10.10.10.0/27,
-Network,Test Network 1,10.10.10.0/28,10.10.10.14
-Network,Test Network 2,10.10.10.16/28,10.10.10.30
+Block,Test Block 2,10.10.10.0/27,,
+Network,Test Network 1,10.10.10.0/28,10.10.10.14,
+Network,Test Network 2,10.10.10.16/28,10.10.10.30,
 Host,test-host.test.xxx,10.10.10.1,This is a comment,add
 Host,test-host2.fake.xxx,10.10.10.2,This is another comment,replace
 Host,test-host.test.xxx,10.10.10.17,Final comment,append
