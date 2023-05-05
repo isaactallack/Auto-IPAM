@@ -52,23 +52,66 @@ class Host:
             block_chain = self.bluecat_manager.utils.dig(bluecat_manager.client, entry[2], "IP4Block")
             network_chain = self.bluecat_manager.utils.dig(bluecat_manager.client, entry[2], "IP4Network", block_chain[-1]['id'])
 
-            self.addHost(self.bluecat_manager.top_level_view_id, network_chain[-1]['id'], entry[1], entry[2])
+            # Only send the comments and add type if they are in the entry and passed validation
+            if entry[3] and entry[4] and self.areCommentsSectionValid(entry[3], entry[4]):
+                self.addHost(self.bluecat_manager.top_level_view_id, network_chain[-1]['id'], entry[1], entry[2], entry[3], entry[4])
+            else:
+                # Otherwise, if they are in the entry but haven't passed verification, send the warning message and then send without comments
+                if entry[3] and entry[4]:
+                    print(f"Excluded comments from ({entry[1]}, {entry[2]}) as it hasn't passed validation.")
+                self.addHost(self.bluecat_manager.top_level_view_id, network_chain[-1]['id'], entry[1], entry[2])
         else:
             print(valid[1])
 
-    def updateRecordWithIP(self, data, new_address):
-        """Update a record with a new IP address."""
+    def areCommentsSectionValid(self, comments, comments_action):
+        """Checks if the comments section is valid before sending off to other functions
+
+        Args:
+            comments (str): The comments to be added to the host.
+            comments_action(str): The action for the comment (add, append or replace).
+
+        Returns:
+            True: the comments and comments_action is valid
+            False: the comment or action isn't valid
+        """
+
+        valid_actions = ['add', 'append', 'replace']
+
+        if comments_action.lower() not in valid_actions:
+            return False
+        if "|" in comments:
+            return False
+
+        return True
+
+    def updateRecord(self, data, new, _type, delim = ",", replace = False):
+        """Modifies the properties field of a host record with new data
+
+        Args:
+            data (dic): Dictionary containing the entry for a specific host record
+            new (str): The data to update the record with, could either be an additional IP address, a new comment or something else completely
+            _type (str): The type of field to update e.g. "addresses", "comments" etc.
+            delim (str, optional): If the operation is to add (replace = False) then define the delimiter between exsiting and new values. "," by default but might want "\r\n" for new line.
+            replace (bool, optional): If replace is set to true, the field in question will be overwritten, otherwise it'll just be added to
+
+        Returns:
+            data (dic) : The updated dictionary containing the new data
+        """
+        _type = f"{_type}="
         # Split the properties string into a list of key-value pairs
         properties_list = data['properties'].split('|')
 
-        # Iterate through the list and find the 'addresses' key
+        # Iterate through the list and find the '_type' key
         for i, prop in enumerate(properties_list):
-            if prop.startswith('addresses='):
-                addresses = prop.split('=')[1]
-                # Add the new address
-                updated_addresses = addresses + ',' + new_address
-                # Update the properties list with the new addresses string
-                properties_list[i] = f'addresses={updated_addresses}'
+            if prop.startswith(_type):
+                old = prop.split('=')[1]
+                # Add the new details
+                if replace:
+                    updated = new
+                else:
+                    updated = old + delim + new
+                # Update the properties list with the new string
+                properties_list[i] = f'{_type}{updated}'
                 break
 
         # Join the properties list back into a single string
@@ -80,8 +123,15 @@ class Host:
         return data
 
     def buildDnsDict(self, host_area):
-        """Populate the DNS dictionary with all hosts in a specific zone."""
-        for zone in self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, self.bluecat_manager.ntlb_view_id, "Zone"):
+        """Populate the DNS dictionary with all hosts in a specific zone.
+
+        Args:
+            host_area (str): The name of the host area that a dictionary should be created from e.g. ""
+
+        Returns:
+            None
+        """
+        for zone in self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, self.bluecat_manager.view_id, "Zone"):
             if zone['name'].upper() == host_area:
                 subzone = zone['id']
 
@@ -96,6 +146,16 @@ class Host:
         self.bluecat_manager.full_updates += [host_area] # Add this domain to the list that have had full dictionaries built
 
     def addToDict(self, hostname, _id):
+        """ Required to update the dictionary on the fly, not only once at the beginning.
+            This is important as it means updated records will not be overwritten and hosts that have been added after the dictionary creation will be seen
+
+        Args:
+            hostname (str): The hostname of the record to be added to the dictionary
+            _id (int): The Bluecat ID value of the record to be added to the dictionary
+
+        Returns:
+            None
+        """
         data = self.bluecat_manager.client.service.getEntityById(_id)
         elements = hostname.split('.')
         host_area = elements[-2].upper()
@@ -106,7 +166,14 @@ class Host:
             self.bluecat_manager.dns_dict[host_area] = [data]
 
     def findExistingHostID(self, hostname):
-        """Find the object ID of an existing host."""
+        """ Finds the object ID of an existing host
+
+        Args:
+            hostname (str): The hostname of the record of which the ID needs to be found
+
+        Returns:
+            id (int): The Bluecat ID of the host
+        """
         elements = hostname.split('.')
         host_area = elements[-2]
         modified_elements = elements[:-2]
@@ -114,7 +181,7 @@ class Host:
         subzone = 0
 
         if host_area.upper() not in self.bluecat_manager.full_updates:
-            print(f"Building dictionary for '{host_area}.ntlb'")
+            print(f"Building dictionary for '{host_area}.'")
             self.buildDnsDict(host_area.upper())
 
         for host in self.bluecat_manager.dns_dict[host_area.upper()]:
@@ -123,57 +190,217 @@ class Host:
                     return host['id']
 
     def IsIpAlreadyAssigned(self, ip, net_id):
-        """ Check to see if the IP address in the range is already assigned """
+        """ Check to see if the IP address in the range is already assigned
+
+        Args:
+            ip (str): The IP address of the record
+            net_id (int): The Bluecat ID of the network range
+
+        Returns:
+            True: The IP is already assigned to one of the addresses in the network range
+            False: The IP address has not yet been assigned to
+        """
         existing_allocations = self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, net_id, "IP4Address")
         if existing_allocations:
             for entity in self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, net_id, "IP4Address"):
                 if ip == self.bluecat_manager.utils.extractAddress(entity['properties']):
                     return True
         return False
-    
-    def addNewHostRecord(self, view_id, _name, ip):
-        """ Add a host record given the host doesn't already exist and the IP isn't already assigned """
-        add_id = self.bluecat_manager.client.service.addHostRecord(view_id, _name, ip, "0", "reverseRecord=true")
+
+    def updateComments(self, host_id, name, data, comments, comments_action):
+        """Updates the comments properties for an existing entry based on the required action
+
+        Args
+            host_id (int): ID of the host that the comments are being edited on.
+            name (str): The full name of the host that the comments are being edited on (including domains).
+            data (dic): The full data dictionary of the host provided.
+            comments (str): The comments to be added to the host.
+            comments_action(str): The action for the comment (add, append or replace).
+
+        Returns:
+            None
+        """
+        
+        properties = data['properties']
+        comments_key = "comments"
+
+        if comments_action.lower() == "add":
+            if comments_key not in properties:
+                data = self.addComments(data, comments)
+            else:
+                pass
+        elif comments_action.lower() == "append":
+            data = self.appendComments(data, comments, properties, comments_key)
+        elif comments_action.lower() == "replace":
+            data = self.replaceComments(data, comments, properties, comments_key)
+        else:
+            raise ValueError("Invalid comments_action value. Allowed values are 'Add', 'Append', 'Replace'.")
+
+        self.bluecat_manager.client.service.update(data)
+        self.addToDict(name, host_id)
+
+    def addComments(self, data, comments):
+        """ Updates the data field by creating, and adding to the comments field in the properties
+
+        Args:
+            data (dic): The full data dictionary of the host provided.
+            comments (str): The comments to be added to the host.
+
+        Returns:
+            data (dic): The data dictionary containing the comments attribute
+        """
+        data['properties'] += f"|comments={comments}"
+        return data
+
+    def appendComments(self, data, comments, properties, comments_key):
+        """ Tries to append the comments to the data field if it already has comments
+            If it doesn't, it calls addComments() to create and add the comments
+
+        Args:
+            data (dic): The full data dictionary of the host provided.
+            comments (str): The comments to be added to the host.
+            properties (str): The properties field within the host record
+            comments_key (str): The key to look out for in the properties field (e.g. "comments")
+
+        Returns:
+            data (dic): The data dictionary containing the comments attribute
+        """
+        if comments_key in properties:
+            data = self.updateRecord(data, comments, comments_key, delim="\r\n", replace=False)
+        else:
+            self.addComments(data, comments)
+        return data
+
+    def replaceComments(self, data, comments, properties, comments_key):
+        """ Tries to replace the comments to the data field if it already has comments
+            If it doesn't, it calls addComments() to create and add the comments
+
+        Args:
+            data (dic): The full data dictionary of the host provided.
+            comments (str): The comments to be added to the host.
+            properties (str): The properties field within the host record
+            comments_key (str): The key to look out for in the properties field (e.g. "comments")
+
+        Returns:
+            data (dic): The data dictionary containing the comments attribute
+        """
+        if comments_key in properties:
+            data = self.updateRecord(data, comments, comments_key, replace=True)
+        else:
+            self.addComments(data, comments)
+        return data
+                
+    def addNewHostRecord(self, view_id, _name, ip, comments):
+        """ Add a host record, given the host doesn't already exist and the IP isn't already assigned
+            If there are comments to add, then add them, otherwise just create the host record without comments
+
+        Args:
+            view_id (int): The Bluecat view ID
+            _name (str): The name of the record to add
+            ip (str): The initial IP address to assign to the host record
+            comments (str): The comments to add to the host record
+
+        Returns:
+            None
+        """
+        if comments:
+            add_id = self.bluecat_manager.client.service.addHostRecord(view_id, _name, ip, "0", f"reverseRecord=true|comments={comments}")
+        else:
+            add_id = self.bluecat_manager.client.service.addHostRecord(view_id, _name, ip, "0", f"reverseRecord=true")
         # Add the new host record into the dictionary
         self.addToDict(_name, add_id)
         print(f"Assigned {_name} to {ip}.")
 
-    def updateHostRecord(self, _name, ip):
-        """ Finds the existing host record that is clashing and updates the record with the new IPs.
-            Will call updateRecordWithIP() which will create the updated record. """
+    def updateHostRecord(self, _name, ip, comments, comments_action):
+        """ Finds the existing host record that is clashing and updates the record with the new IPs and comments.
+            Will call updateRecordWithIP() which will create the updated record.
+            If comments required, will call updateComments() which will sort out comments for the record.
+
+        Args:
+            _name (str): The name of the record to update
+            ip (str): The new IP address to assign to the host record
+            comments (str): The comments to add to the host record
+            comments_action (str): How to add the comments (Should they only be added if there are none existing? Should they append? Should they replace existing?)
+
+        Returns:
+            None
+        """
         host_id = self.findExistingHostID(_name)
         host = self.bluecat_manager.client.service.getEntityById(host_id)
-        self.bluecat_manager.client.service.update(self.updateRecordWithIP(host, ip))
+        self.bluecat_manager.client.service.update(self.updateRecord(host, ip, "addresses"))
+
+        if comments and comments_action:
+            self.updateComments(host_id, _name, host, comments, comments_action)
+            
         print(f"Assigned {_name} to {ip}. Existing record with IP added.")
 
-    def addHost(self, view_id, net_id, _name, ip):
-        """Add a host with a specific IP address.
-            Will do checks to ensure IPs aren't already assigned and will update an existing record if required. """
+    def addHost(self, view_id, net_id, _name, ip, comments = None, comments_action = None):
+        """ Tries to add a host with a specific IP address.
+            Initially just tries to add a new host record, failing this, will try to update the existing record.
+            
+        Args:
+            view_id (int): The Bluecat view ID
+            net_id (int): The Bluecat ID for the network the host is being added to
+            _name (str): The name of the record to add (or update if the case may be)
+            ip (str): The IP address to assign to the host record
+            comments (str, optional): The comments to add to the host record
+            comments_action (str, optional): How to add the comments (Should they only be added if there are none existing? Should they append? Should they replace existing?)
+
+        Returns:
+            None
+        """
         if self.IsIpAlreadyAssigned(ip, net_id):
             print(f"Address ({ip}) already assigned.")
         else:
             try:
-                self.addNewHostRecord(view_id, _name, ip)
+                self.addNewHostRecord(view_id, _name, ip, comments)
             except Exception as e:
-                self.updateHostRecord(_name, ip)
+                self.updateHostRecord(_name, ip, comments, comments_action)
 
     def checkIfHostnameHasTwoDomains(self, hostname):
+        """ Checks if a hostname has two layers of domains
+            
+        Args:
+            hostname (str): The hostname of the record to add
+
+        Returns:
+            True: There is a parent domain and a subdomain
+            False: There aren't enough layers of domains
+        """
         if hostname.count(".") < 2:
             return False
         return True
 
-    def checkIfHostnameIsInNTLB(self, hostname):
+    def checkIfHostnameIsIn(self, hostname):
+        """ Checks if a hostname is in the right parent domain
+            
+        Args:
+            hostname (str): The hostname of the record to add
+
+        Returns:
+            True: Host is in the correct parent domain
+            False: Host isn't in the correct parent domain
+        """        
         elements = hostname.split('.')
         domain = elements[-1]
-        if domain.upper() != "NTLB":
+        if domain.upper() != "":
             return False
         return True
 
     def checkIfHostnameHasValidSubdomain(self, hostname):
+        """ Checks if a hostname has a valid subdomain
+            
+        Args:
+            hostname (str): The hostname of the record to add
+
+        Returns:
+            True: Host has a valid subdomain
+            False: Host has an invalid subdomain
+        """  
         host_area_exists = False
         elements = hostname.split('.')
         host_area = elements[-2]
-        for zone in self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, self.bluecat_manager.ntlb_view_id, "Zone"):
+        for zone in self.bluecat_manager.utils.getEntities(self.bluecat_manager.client, self.bluecat_manager.view_id, "Zone"):
             if zone['name'].upper() == host_area.upper():
                 host_area_exists = True
         if not host_area_exists:
@@ -181,13 +408,21 @@ class Host:
         return True
 
     def checkIfValidHostname(self, hostname):
-        """Check if the given hostname is valid."""
+        """ Calls all hostname validity functions to determine if the hostname is good
+            
+        Args:
+            hostname (str): The hostname of the record to add
+
+        Returns:
+            True: Host is good to go!
+            False: Host is invalid in someway
+        """  
         return (
             (False, f"Did you forget to add the full subdomain + domain for this hostname ({hostname})?")
             if not self.checkIfHostnameHasTwoDomains(hostname)
             else (
-                (False, f"This hostname ({hostname}) is not part of the 'ntlb' domain.")
-                if not self.checkIfHostnameIsInNTLB(hostname)
+                (False, f"This hostname ({hostname}) is not part of the parent domain.")
+                if not self.checkIfHostnameIsIn(hostname)
                 else (
                     (False, f"This subdomain doesn't exist. Please check the hostname ({hostname}).")
                     if not self.checkIfHostnameHasValidSubdomain(hostname)
@@ -322,7 +557,7 @@ class BluecatManager:
         self.dns_dict = {}
         self.full_updates = [] # Which domains have had a full dictionary built
         self.top_level_view_id = config["top_level_view_id"]
-        self.ntlb_view_id = config["ntlb_view_id"]
+        self.view_id = config["view_id"]
         self.block_properties = f"allowDuplicateHost=disable|inheritAllowDuplicateHost=true|pingBeforeAssign=disable|inheritPingBeforeAssign=true|inheritDefaultDomains=true|defaultView={self.top_level_view_id}|inheritDefaultView=true|inheritDNSRestrictions=true|"
 
         self.block = Block(self)
@@ -356,6 +591,6 @@ for entry in data:
         process_entry_func(entry)
     else:
         print(f"Unknown entry type: {entry[0]}")
-    time.sleep(1) # Adding just in case of rate limiting
+    time.sleep(1) # Adding just to avoid hitting server too hard - probably fine but I'm in no rush
 
 bluecat_manager.logout()
