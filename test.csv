@@ -1,3 +1,4 @@
+Type,Name,CIDR/Address,Default Gateway/Comment,Comment Action
 Block,Test Block 2,10.10.10.0/27,,
 Network,Test Network 1,10.10.10.0/28,10.10.10.14,
 Network,Test Network 2,10.10.10.16/28,10.10.10.30,
